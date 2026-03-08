@@ -1,12 +1,3 @@
-"""
-One-time setup script:
-  1. Embeds all documents and populates the ChromaDB collection.
-  2. Trains and saves UMAP + GMM models locally.
-
-Usage:
-    python setup_db.py
-"""
-
 import os
 import joblib
 import numpy as np
