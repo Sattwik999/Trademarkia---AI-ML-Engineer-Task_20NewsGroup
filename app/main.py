@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 import traceback
 import chromadb
 
@@ -9,11 +9,7 @@ from app.cluster_utils import get_cluster
 from app.semantic_cache import SemanticCache
 
 
-app = FastAPI(
-    title="20 Newsgroups Semantic Search API",
-    description="Semantic search over the 20 Newsgroups dataset with cluster-aware caching.",
-    version="1.0.0",
-)
+app = FastAPI()
 
 cache = SemanticCache(threshold=0.9)
 
@@ -21,15 +17,8 @@ client = chromadb.PersistentClient(path="chroma_db")
 collection = client.get_or_create_collection("newsgroups_docs")
 
 
-# ── Request / Response models ─────────────────────────────────────────────────
-
 class QueryRequest(BaseModel):
     query: str
-
-
-class ResultItem(BaseModel):
-    text: str
-    category: str
 
 
 class QueryResponse(BaseModel):
@@ -37,7 +26,7 @@ class QueryResponse(BaseModel):
     cache_hit: bool
     matched_query: Optional[str]
     similarity_score: float
-    result: List[ResultItem]
+    result: str
     dominant_cluster: int
 
 
@@ -52,13 +41,10 @@ class CacheClearResponse(BaseModel):
     message: str
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
-
 @app.post("/query", response_model=QueryResponse)
 def query(payload: QueryRequest):
     try:
         query_text = payload.query
-
         query_vector = embed_query(query_text)
         cluster_id, _ = get_cluster(query_vector)
         cached = cache.lookup(cluster_id, query_vector)
@@ -76,28 +62,34 @@ def query(payload: QueryRequest):
         results = collection.query(
             query_embeddings=[query_vector.tolist()],
             n_results=5,
-            include=["documents", "metadatas"],
         )
-        docs = results["documents"][0]
-        metas = results["metadatas"][0]
-        result_items = [
-            ResultItem(text=doc, category=meta.get("category", "unknown"))
-            for doc, meta in zip(docs, metas)
-        ]
+        result_text = "\n\n".join(results["documents"][0])
 
-        cache.store(cluster_id, query_text, query_vector, result_items)
+        cache.store(cluster_id, query_text, query_vector, result_text)
 
         return QueryResponse(
             query=query_text,
             cache_hit=False,
             matched_query=None,
             similarity_score=0.0,
-            result=result_items,
+            result=result_text,
             dominant_cluster=cluster_id,
         )
 
     except Exception:
         raise HTTPException(status_code=500, detail=traceback.format_exc())
+
+
+@app.get("/cache/stats", response_model=CacheStatsResponse)
+def cache_stats():
+    return cache.stats()
+
+
+@app.delete("/cache", response_model=CacheClearResponse)
+def clear_cache():
+    cache.clear()
+    return CacheClearResponse(message="Cache cleared successfully.")
+
 
 
 @app.get("/cache/stats", response_model=CacheStatsResponse)
