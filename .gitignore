@@ -1,0 +1,32 @@
+# Large data files (>100MB, exceeds GitHub limit)
+data/clean_newsgroups_dataset.csv
+
+# Python virtual environment
+venv/
+env/
+.env
+*.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Model files (large binaries, regenerate with setup_db.py)
+models/*.pkl
+
+# ChromaDB data (regenerate with setup_db.py)
+chroma_db/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
