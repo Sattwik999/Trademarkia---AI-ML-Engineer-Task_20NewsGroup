@@ -1,0 +1,408 @@
+# Semantic Search System with Fuzzy Clustering and Semantic Cache
+
+A lightweight semantic search system built on the **20 Newsgroups dataset** (~20,000 documents across 20 overlapping topics), combining vector embeddings, fuzzy clustering, and semantic caching — exposed via a FastAPI service.
+
+> Developed as part of the **Trademarkia AI & ML Engineer Assignment** by Sattwik Sarkar.
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Dataset](#dataset)
+- [Implementation](#implementation)
+  - [Part 1 — Embeddings & Vector Database](#part-1--embeddings--vector-database)
+  - [Part 2 — Fuzzy Clustering](#part-2--fuzzy-clustering)
+  - [Part 3 — Semantic Cache](#part-3--semantic-cache)
+  - [Part 4 — FastAPI Service](#part-4--fastapi-service)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
+  - [Running Locally](#running-locally)
+  - [Running with Docker](#running-with-docker)
+- [API Reference](#api-reference)
+- [Key Technologies](#key-technologies)
+
+---
+
+## Overview
+
+This system efficiently retrieves semantically relevant documents while avoiding redundant computation for similar queries. The core idea is that two queries like `"space shuttle launch"` and `"NASA rocket launch"` are semantically equivalent — and should share cached results.
+
+The system achieves this through:
+
+- **Dense vector embeddings** for semantic representation
+- **Fuzzy (probabilistic) clustering** to capture overlapping topic structure
+- **Cluster-aware semantic caching** to short-circuit redundant vector searches
+- **FastAPI** to expose the pipeline as a queryable REST service
+
+---
+
+## Architecture
+
+```
+Dataset
+   ↓
+Text Cleaning & Preprocessing
+   ↓
+Sentence Embeddings (MiniLM — all-MiniLM-L6-v2)
+   ↓
+Vector Database (ChromaDB)
+   ↓
+Fuzzy Clustering (UMAP + GMM)
+   ↓
+Semantic Cache (cluster-aware)
+   ↓
+FastAPI Service
+```
+
+**Runtime query flow:**
+
+```
+User Query
+   ↓
+Query Embedding
+   ↓
+Cluster Assignment
+   ↓
+Semantic Cache Lookup
+   ↓
+Cache Hit  → return cached result
+Cache Miss → search vector database → store in cache
+```
+
+---
+
+## Dataset
+
+The project uses the **20 Newsgroups** dataset, a widely used benchmark for text classification and semantic analysis.
+
+| Property       | Details                              |
+|----------------|--------------------------------------|
+| Documents      | ~20,000                              |
+| Categories     | 20 overlapping topic groups          |
+| Noise          | Headers, quoted replies, metadata    |
+| Source         | [UCI ML Repository](https://archive.ics.uci.edu/dataset/113/twenty+newsgroups) |
+
+---
+
+## Implementation
+
+The project was implemented in two stages.
+
+### Stage 1 — Data Processing & Clustering (Google Colab)
+
+Due to the computational cost of embedding and clustering ~20k documents, the following steps were executed in Google Colab:
+
+- Data preprocessing & cleaning
+- Sentence embedding generation
+- Vector database creation (ChromaDB)
+- Fuzzy clustering (UMAP + GMM)
+
+**Artifacts exported from Colab:**
+
+```
+clean_newsgroups_dataset.csv
+document_embeddings.npy
+cluster_probabilities.npy
+umap_model.pkl
+gmm_model.pkl
+chroma_db/
+```
+
+### Stage 2 — Semantic Cache & API (Local)
+
+Built locally using the Colab-generated artifacts:
+
+- Semantic cache implementation
+- FastAPI service
+- Query pipeline
+
+---
+
+### Part 1 — Embeddings & Vector Database
+
+#### Data Cleaning
+
+The raw dataset contains significant noise, including:
+
+- Email headers and sender metadata
+- Quoted reply chains
+- Signature blocks and footers
+
+These were stripped during preprocessing while preserving semantic content.
+
+#### Embedding Model
+
+```
+SentenceTransformers — all-MiniLM-L6-v2
+Output dimensions: 384
+```
+
+**Why this model?**
+
+- Lightweight and fast inference
+- High-quality 384-dimensional sentence embeddings
+- Well-suited for semantic similarity tasks
+
+#### Vector Database
+
+Embeddings are stored in **ChromaDB**, a lightweight persistent vector database.
+
+Each record stores:
+- Document text
+- Dense embedding vector
+- Metadata
+
+ChromaDB enables efficient nearest-neighbor semantic retrieval with simple Python integration.
+
+---
+
+### Part 2 — Fuzzy Clustering
+
+The 20 labeled newsgroup categories have significant semantic overlap. For example:
+
+```
+Gun legislation discussion
+   ↳ politics.guns
+   ↳ talk.politics.misc
+   ↳ rec.sport.misc (tangentially)
+```
+
+Hard cluster assignment fails to capture this. A probabilistic approach is used instead.
+
+#### Clustering Pipeline
+
+```
+Sentence Embeddings (384-dim)
+      ↓
+UMAP Dimensionality Reduction (384 → 20 dims)
+      ↓
+Gaussian Mixture Model (GMM)
+```
+
+#### UMAP
+
+Reduces embedding dimensionality from **384 → 20** dimensions, improving clustering performance while preserving semantic neighborhood structure.
+
+#### Gaussian Mixture Model (GMM)
+
+GMM produces a **probability distribution** across clusters per document rather than a single hard assignment:
+
+```
+Document A:
+  Cluster 3  → 0.52
+  Cluster 7  → 0.38
+  Cluster 11 → 0.10
+```
+
+This reflects the natural semantic overlap between newsgroup topics.
+
+#### Choosing the Number of Clusters
+
+The optimal cluster count was determined using the **Bayesian Information Criterion (BIC)**:
+
+| Clusters | BIC        |
+|----------|------------|
+| 10       | -2,160,172 |
+| 15       | -2,279,148 |
+| 20       | -2,350,532 |
+
+Although BIC improved with more clusters, **15 clusters** provided the best balance between model fit and topic interpretability. Higher counts produced overfragmented topics.
+
+---
+
+### Part 3 — Semantic Cache
+
+Traditional key-value caches only match **identical** queries. The semantic cache matches **similar** queries using embedding cosine similarity.
+
+#### Cluster-Aware Design
+
+Instead of comparing a new query against all cached queries:
+
+```
+Query
+   ↓
+Cluster Assignment
+   ↓
+Compare only within that cluster's cache entries
+```
+
+This keeps lookup cost bounded as the cache grows.
+
+#### Cache Data Structure
+
+Implemented from first principles using Python and NumPy — no external caching systems used.
+
+```python
+cache = {
+    cluster_id: {
+        "queries":  [],   # original query strings
+        "vectors":  [],   # query embedding vectors
+        "results":  []    # retrieved document results
+    }
+}
+```
+
+#### Similarity Threshold
+
+The key tunable parameter controlling cache behavior:
+
+| Threshold | Behavior                                      |
+|-----------|-----------------------------------------------|
+| Lower     | More cache hits; risk of returning imprecise matches |
+| Higher    | Fewer hits; higher result precision           |
+
+Default: `0.9`
+
+---
+
+### Part 4 — FastAPI Service
+
+The full pipeline is exposed via a **FastAPI** REST service.
+
+---
+
+## Project Structure
+
+```
+project/
+├── app/
+│   ├── main.py              # FastAPI application & endpoints
+│   ├── semantic_cache.py    # Cluster-aware semantic cache
+│   ├── embedding_utils.py   # Embedding generation utilities
+│   └── cluster_utils.py     # UMAP + GMM cluster assignment
+├── models/
+│   ├── umap_model.pkl       # Trained UMAP model
+│   └── gmm_model.pkl        # Trained GMM model
+├── data/
+│   └── clean_newsgroups_dataset.csv
+├── chroma_db/               # Persistent ChromaDB vector store
+├── TradeMarkia_AIEngineer_20Newsgroup.ipynb
+├── requirements.txt
+├── Dockerfile
+└── docker-compose.yml
+```
+
+---
+
+## Getting Started
+
+### Running Locally
+
+**1. Create and activate a virtual environment**
+
+```bash
+python -m venv venv
+```
+
+```bash
+# Windows
+venv\Scripts\activate
+
+# Linux / macOS
+source venv/bin/activate
+```
+
+**2. Install dependencies**
+
+```bash
+pip install -r requirements.txt
+```
+
+**3. Start the API server**
+
+```bash
+uvicorn app.main:app --reload
+```
+
+**4. Open interactive API docs**
+
+```
+http://127.0.0.1:8000/docs
+```
+
+---
+
+### Running with Docker
+
+**Build and start the container**
+
+```bash
+docker-compose up --build
+```
+
+The API will be available at `http://localhost:8000`.
+
+---
+
+## API Reference
+
+### `POST /query`
+
+Submit a natural language query to the semantic search pipeline.
+
+**Request body:**
+
+```json
+{
+  "query": "space shuttle launch"
+}
+```
+
+**Response:**
+
+```json
+{
+  "query": "space shuttle launch",
+  "cache_hit": true,
+  "matched_query": "NASA rocket launch",
+  "similarity_score": 0.91,
+  "result": "...",
+  "dominant_cluster": 3
+}
+```
+
+---
+
+### `GET /cache/stats`
+
+Returns current cache statistics.
+
+**Response:**
+
+```json
+{
+  "total_entries": 42,
+  "hit_count": 17,
+  "miss_count": 25,
+  "hit_rate": 0.405
+}
+```
+
+---
+
+### `DELETE /cache`
+
+Clears the semantic cache and resets all statistics.
+
+---
+
+## Key Technologies
+
+| Technology          | Role                                      |
+|---------------------|-------------------------------------------|
+| SentenceTransformers | Document & query embedding (MiniLM)      |
+| ChromaDB            | Persistent vector database                |
+| UMAP                | Dimensionality reduction for clustering   |
+| Gaussian Mixture Model | Fuzzy (probabilistic) cluster assignment |
+| NumPy               | Cache data structures & cosine similarity |
+| FastAPI             | REST API service                          |
+| Docker              | Containerized deployment                  |
+
+---
+
+## Author
+
+**Sattwik Sarkar**  
+AI & ML Engineering Task — Trademarkia
