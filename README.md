@@ -23,6 +23,7 @@ A lightweight semantic search system built on the **20 Newsgroups dataset** (~20
   - [Running with Docker](#running-with-docker)
 - [API Reference](#api-reference)
 - [Key Technologies](#key-technologies)
+- [Design Decisions](#design-decisions)
 
 ---
 
@@ -449,6 +450,172 @@ Clears the semantic cache and resets all statistics.
 | NumPy               | Cache data structures & cosine similarity |
 | FastAPI             | REST API service                          |
 | Docker              | Containerized deployment                  |
+
+---
+
+## Design Decisions
+
+The assignment is intentionally open-ended. Below are the explicit justifications for every significant design choice made in this project.
+
+---
+
+### Part 1 — Embedding Model Choice
+
+**Chosen model:** `all-MiniLM-L6-v2` (SentenceTransformers)
+
+The system needs to perform semantic similarity comparisons at query time across tens of thousands of documents. The embedding model must therefore be:
+
+- Fast enough to embed ~20,000 documents in a reasonable time on CPU/Colab
+- Semantically expressive enough to distinguish overlapping newsgroup topics
+- Small enough to ship inside a lightweight deployment without GPU dependencies
+
+`all-MiniLM-L6-v2` satisfies all three constraints:
+
+| Property        | Value                          |
+|-----------------|--------------------------------|
+| Embedding size  | 384 dimensions                 |
+| Model size      | ~22 MB                         |
+| Inference speed | Very fast on CPU               |
+| Semantic quality| Strong for sentence-level tasks|
+
+Larger models (e.g. `all-mpnet-base-v2`, 768-dim) would produce richer representations but at 3–4× the inference cost, which is not justified for a system whose bottleneck is cache lookup and vector search, not embedding quality.
+
+---
+
+### Part 1 — Vector Store Choice
+
+**Chosen store:** ChromaDB
+
+The vector store must support:
+- Persistent storage (survive server restarts)
+- Efficient approximate nearest-neighbor search over 384-dim embeddings
+- Simple integration without a separate server process
+- Metadata filtering for future extensibility
+
+ChromaDB satisfies all of these with a single `pip install` and a local file-based backend. Alternatives:
+
+| Option     | Reason not chosen                                           |
+|------------|-------------------------------------------------------------|
+| FAISS      | In-memory only; requires manual persistence wiring         |
+| Pinecone   | Cloud-hosted; unnecessary for a local assignment submission |
+| Weaviate   | Requires a running Docker container as a dependency         |
+| Qdrant     | Excellent, but heavier operational footprint than needed    |
+
+---
+
+### Part 1 — Data Cleaning Choices
+
+The 20 Newsgroups posts contain substantial noise that degrades embedding quality:
+
+| Noise type              | Decision    | Reasoning                                                      |
+|-------------------------|-------------|----------------------------------------------------------------|
+| Email headers (`From:`, `Subject:`, etc.) | Removed | Metadata; not part of semantic content |
+| Quoted reply chains (`>`) | Removed | Reflect another author's content, not the document's own meaning |
+| Signature blocks        | Removed     | Boilerplate; adds no topical signal                            |
+| URLs and email addresses | Removed    | No semantic value in embedding space                           |
+| Short documents (<20 tokens after cleaning) | Removed | Insufficient context for a meaningful embedding          |
+
+The goal was to preserve the *topic signal* of each post while stripping structural and conversational artifacts.
+
+---
+
+### Part 2 — Why Fuzzy Clustering (not hard clustering)
+
+The assignment explicitly states that hard cluster assignments are not acceptable. The 20 Newsgroups categories already demonstrate this:
+
+- A post about gun legislation semantically spans `talk.politics.guns`, `talk.politics.misc`, and potentially `sci.med` (injury statistics)
+- A post about space exploration spans `sci.space` and `sci.med` (astronaut health) simultaneously
+
+Hard methods like K-Means assign each document to exactly one centroid, discarding this overlap. **Gaussian Mixture Models** instead produce a probability distribution over clusters per document, which directly models the soft boundaries between newsgroup topics.
+
+---
+
+### Part 2 — Why UMAP before GMM
+
+GMM operates on Euclidean distance in the input space. At 384 dimensions:
+
+- All points tend toward similar pairwise distances (curse of dimensionality)
+- GMM covariance estimation becomes numerically unstable
+- Clustering quality degrades significantly
+
+UMAP reduces the embedding space to **20 dimensions** while preserving local and global semantic neighborhoods. This makes the GMM density estimation well-conditioned and produces more meaningful cluster boundaries.
+
+Why 20 dimensions for UMAP output (not 2 or 5)?
+- 2D/3D is useful for visualisation but loses too much structure for clustering
+- 20 dimensions preserves the richer neighborhood structure needed for a 15-cluster GMM to work well
+- Empirically, UMAP at 20 output dims + GMM produced tighter, more interpretable clusters than lower reductions
+
+---
+
+### Part 2 — Choosing the Number of Clusters
+
+The number of clusters was not chosen by convenience. It was selected using the **Bayesian Information Criterion (BIC)**, which penalises model complexity while rewarding fit:
+
+| Clusters | BIC        |
+|----------|------------|
+| 10       | -2,160,172 |
+| 15       | -2,279,148 |
+| 20       | -2,350,532 |
+
+BIC improved monotonically with more clusters, but:
+
+- At 20 clusters, many clusters contained highly fragmented subsets of the same underlying topic (e.g., three separate clusters all corresponding to `comp.os.ms-windows`)
+- At 10 clusters, semantically distinct topics (e.g., `sci.med` and `sci.space`) collapsed into a single cluster
+- **15 clusters** offered the best balance: each cluster was semantically coherent and distinguishable, without excessive fragmentation
+
+This is consistent with the known structure of the dataset, where the 20 labeled categories have significant overlap and do not resolve cleanly into 20 independent semantic groups.
+
+---
+
+### Part 3 — Semantic Cache Design
+
+**Why not a standard key-value cache?**
+
+A standard cache (`dict[query_string → result]`) only hits when the query is byte-for-byte identical. The assignment specifically calls for recognising semantically equivalent queries phrased differently — a problem a hash map cannot solve.
+
+**The approach:**
+
+1. Embed the incoming query using the same model
+2. Assign it to its dominant cluster
+3. Compare its embedding against only the cached entries **in that same cluster** using cosine similarity
+4. If the maximum similarity exceeds the threshold, return the cached result
+
+**Why cosine similarity (not Euclidean distance)?**
+
+Embeddings from sentence transformers are unit-normalised. Cosine similarity is equivalent to dot product for unit vectors and directly measures directional alignment in semantic space — the right metric for "does this query mean the same thing".
+
+**Why cluster-scoped lookup?**
+
+Without clustering, cache lookup cost grows linearly with cache size: every new query must be compared against every cached vector. With cluster-scoped lookup, the comparison set is bounded by the per-cluster cache population. As the cache grows, lookup remains efficient because each cluster absorbs only semantically related queries.
+
+---
+
+### Part 3 — Similarity Threshold
+
+The threshold is the single most consequential tunable parameter in the system:
+
+| Threshold | Effect |
+|-----------|--------|
+| `0.70`    | Aggressive caching — high hit rate, risk of returning results for queries that are related but not equivalent |
+| `0.85`    | Balanced — good hit rate for paraphrases; misses for more loosely related queries |
+| `0.90`    | Conservative — only near-identical phrasings hit; high precision, lower recall |
+| `0.95`    | Very strict — effectively only catches near-duplicates |
+
+The default is set to **`0.9`**. This was chosen because the newsgroup queries in practice tend to be short and specific, making a high-precision threshold more appropriate than a recall-maximising one. Returning a cached result for a query that is merely *related* (not equivalent) would be a correctness failure.
+
+The threshold is left as a configurable parameter precisely so this trade-off can be explored at runtime.
+
+---
+
+### Part 4 — FastAPI
+
+FastAPI was chosen over Flask/Django for three reasons:
+
+1. **Automatic OpenAPI docs** at `/docs` — useful for manual testing without a separate client
+2. **Async-native** — ready for future concurrent query handling without refactoring
+3. **Pydantic validation** — request/response schemas are enforced at the boundary with no extra code
+
+The service starts cleanly with a single `uvicorn app.main:app --reload` command as required by the assignment.
 
 ---
 
