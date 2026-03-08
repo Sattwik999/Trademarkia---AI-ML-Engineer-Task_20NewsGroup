@@ -49,15 +49,17 @@ def query(payload: QueryRequest):
         cluster_id, _ = get_cluster(query_vector)
         cached = cache.lookup(cluster_id, query_vector)
 
-        if cached:
+        if cached and cached.get("cache_hit"):
             return QueryResponse(
                 query=query_text,
                 cache_hit=True,
                 matched_query=cached["matched_query"],
-                similarity_score=round(float(cached["similarity_score"]), 4),
+                similarity_score=round(cached["similarity_score"], 4),
                 result=cached["result"],
                 dominant_cluster=cluster_id,
             )
+
+        best_score = round(cached["similarity_score"], 4) if cached else 0.0
 
         results = collection.query(
             query_embeddings=[query_vector.tolist()],
@@ -71,7 +73,7 @@ def query(payload: QueryRequest):
             query=query_text,
             cache_hit=False,
             matched_query=None,
-            similarity_score=0.0,
+            similarity_score=best_score,
             result=result_text,
             dominant_cluster=cluster_id,
         )

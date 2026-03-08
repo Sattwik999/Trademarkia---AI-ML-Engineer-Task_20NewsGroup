@@ -24,7 +24,7 @@ print(json.dumps({
     "cache_hit":        d["cache_hit"],
     "matched_query":    d["matched_query"],
     "similarity_score": d["similarity_score"],
-    "result":           [{"text": r["text"][:80]+"...", "category": r["category"]} for r in d["result"]],
+    "result":           d["result"][:120] + "...",
     "dominant_cluster": d["dominant_cluster"],
 }, indent=2))
 

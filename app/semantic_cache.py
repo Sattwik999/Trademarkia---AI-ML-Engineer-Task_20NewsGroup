@@ -40,19 +40,20 @@ class SemanticCache:
 
         best_idx = int(np.argmax(similarities))
 
-        best_score = similarities[best_idx]
+        best_score = float(similarities[best_idx])
 
         if best_score >= self.threshold:
 
             self.hit_count += 1
 
             return {
+                "cache_hit": True,
                 "matched_query": bucket["queries"][best_idx],
                 "result": bucket["results"][best_idx],
-                "similarity_score": float(best_score)
+                "similarity_score": best_score
             }
 
-        return None
+        return {"cache_hit": False, "similarity_score": best_score}
 
 
     def store(self, cluster_id, query, vector, result):
