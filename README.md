@@ -189,13 +189,6 @@ Reduces embedding dimensionality from **384 → 20** dimensions, improving clust
 
 GMM produces a **probability distribution** across clusters per document rather than a single hard assignment:
 
-```
-Document A:
-  Cluster 3  → 0.52
-  Cluster 7  → 0.38
-  Cluster 11 → 0.10
-```
-
 This reflects the natural semantic overlap between newsgroup topics.
 
 #### Choosing the Number of Clusters
