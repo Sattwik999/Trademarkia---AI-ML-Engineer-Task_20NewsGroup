@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import traceback
 import chromadb
 
@@ -27,12 +27,17 @@ class QueryRequest(BaseModel):
     query: str
 
 
+class ResultItem(BaseModel):
+    text: str
+    category: str
+
+
 class QueryResponse(BaseModel):
     query: str
     cache_hit: bool
     matched_query: Optional[str]
     similarity_score: float
-    result: str
+    result: List[ResultItem]
     dominant_cluster: int
 
 
@@ -71,18 +76,23 @@ def query(payload: QueryRequest):
         results = collection.query(
             query_embeddings=[query_vector.tolist()],
             n_results=5,
+            include=["documents", "metadatas"],
         )
         docs = results["documents"][0]
-        result_text = "\n\n---\n\n".join(docs)
+        metas = results["metadatas"][0]
+        result_items = [
+            ResultItem(text=doc, category=meta.get("category", "unknown"))
+            for doc, meta in zip(docs, metas)
+        ]
 
-        cache.store(cluster_id, query_text, query_vector, result_text)
+        cache.store(cluster_id, query_text, query_vector, result_items)
 
         return QueryResponse(
             query=query_text,
             cache_hit=False,
             matched_query=None,
             similarity_score=0.0,
-            result=result_text,
+            result=result_items,
             dominant_cluster=cluster_id,
         )
 
