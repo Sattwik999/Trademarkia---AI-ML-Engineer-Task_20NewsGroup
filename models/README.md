@@ -6,4 +6,4 @@
 | `gmm_model.pkl` | Fitted Gaussian Mixture Model for clustering | `cluster_utils.train_gmm()` |
 
 These files are **generated artefacts** and are not committed to version control.
-Run `main.py` once to produce them automatically.
+Run the Colab Notebook to generate both.
