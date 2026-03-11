@@ -7,4 +7,4 @@
 | `cluster_probabilities.npy` | Soft GMM cluster membership per document | `cluster_utils.get_cluster_probabilities()` |
 
 These files are **generated artefacts** and are not committed to version control.
-Run `main.py` once to produce them automatically.
+Run Colab Notebook provided in the Repo to produce them automatically.
